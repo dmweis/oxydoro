@@ -12,8 +12,12 @@ name = "server"
 path = "src/server.rs"
 
 [[bin]]
-name = "client"
+name = "cli"
 path = "src/client.rs"
+
+[[bin]]
+name = "gui"
+path = "src/gui-client.rs"
 
 
 [dependencies]
@@ -22,6 +26,8 @@ tokio = { version = "0.2", features = ["macros", "time"] }
 prost = "0.6"
 clap = "3.0.0-beta.1"
 uuid = { version = "0.8", features = ["v4"] }
+iced = { version = "0.1", features = ["debug", "tokio"] }
+
 
 [build-dependencies]
 tonic-build = { version = "0.3", features = ["prost"] }
