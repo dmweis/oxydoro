@@ -13,7 +13,7 @@ pub mod oxydoro {
 
 struct OxydoroUI {
     state: OxydoroState,
-    rpc_connector: Option<OxydoroClient<Channel>>
+    rpc_connector: Option<OxydoroClient<Channel>>,
 }
 
 impl OxydoroUI {
@@ -37,7 +37,6 @@ async fn create_rpc_connection(address: String) -> Result<OxydoroClient<Channel>
         .map_err(|_| OxydoroError::ConnectionError)
 }
 
-
 enum OxydoroState {
     Connecting,
     Connected,
@@ -48,7 +47,7 @@ enum OxydoroState {
 #[derive(Debug, Clone)]
 enum Message {
     Connected(Result<OxydoroClient<Channel>, OxydoroError>),
-    Received(Result<Vec<Task>, OxydoroError>)
+    Received(Result<Vec<Task>, OxydoroError>),
 }
 
 impl Application for OxydoroUI {
@@ -81,26 +80,23 @@ impl Application for OxydoroUI {
                 self.state = OxydoroState::Connected;
                 let request = tonic::Request::new(GetAllTasksRequest {});
                 self.rpc_connector = Some(rpc_client.clone());
-                let future = async move {
-                    rpc_client.get_all_tasks(request).await
-                };
-                Command::perform(
-                    future,
-                    |response| {
-                        Message::Received(
-                            response.map(|res| res.into_inner().tasks)
-                            .map_err(|_| OxydoroError::ConnectionError)
-                        )
-                    })
+                let future = async move { rpc_client.get_all_tasks(request).await };
+                Command::perform(future, |response| {
+                    Message::Received(
+                        response
+                            .map(|res| res.into_inner().tasks)
+                            .map_err(|_| OxydoroError::ConnectionError),
+                    )
+                })
             }
             Message::Connected(Err(_)) => {
                 self.state = OxydoroState::Error;
                 Command::none()
-            },
+            }
             Message::Received(Ok(task_list)) => {
                 self.state = OxydoroState::Data(task_list);
                 Command::none()
-            },
+            }
             Message::Received(Err(_)) => {
                 self.state = OxydoroState::Error;
                 Command::none()
@@ -132,14 +128,12 @@ impl Application for OxydoroUI {
             .center_x()
             .center_y()
             .into(),
-            OxydoroState::Data(task_list) => {
-                Container::new(Text::new("Got data").size(40))
+            OxydoroState::Data(task_list) => Container::new(Text::new("Got data").size(40))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x()
                 .center_y()
-                .into()
-            }
+                .into(),
         }
     }
 }
