@@ -1,10 +1,13 @@
+mod style;
+
 use iced::{
-    executor, scrollable, text_input, Align, Application, Color, Column, Command, Container,
-    Element, Font, Length, Row, Scrollable, Settings, Space, Subscription, Text, TextInput,
+    executor, Application, Color, Column, Command, Container, Element, Length, Settings, Text, scrollable, Scrollable, Row, Align, TextInput, text_input
 };
 
+use style::Theme;
+
 use oxydoro::oxydoro_client::OxydoroClient;
-use oxydoro::{CreateTaskRequest, GetAllTasksRequest, Task};
+use oxydoro::{GetAllTasksRequest, Task};
 use tonic::transport::Channel;
 
 pub mod oxydoro {
@@ -13,14 +16,29 @@ pub mod oxydoro {
 
 struct OxydoroUI {
     state: OxydoroState,
-    rpc_connector: Option<OxydoroClient<Channel>>,
+    theme: Theme,
+}
+
+enum OxydoroState {
+    Connecting,
+    Connected {
+        rpc_connector: OxydoroClient<Channel>,
+    },
+    Data {
+        rpc_connector: OxydoroClient<Channel>,
+        tasks: Vec<Task>,
+        scroll_state: scrollable::State,
+        text_input_state: text_input::State,
+        new_task_name: String,
+    },
+    Error,
 }
 
 impl OxydoroUI {
-    fn new() -> OxydoroUI {
+    fn new(theme: Theme) -> OxydoroUI {
         OxydoroUI {
             state: OxydoroState::Connecting,
-            rpc_connector: None,
+            theme,
         }
     }
 }
@@ -37,27 +55,21 @@ async fn create_rpc_connection(address: String) -> Result<OxydoroClient<Channel>
         .map_err(|_| OxydoroError::ConnectionError)
 }
 
-enum OxydoroState {
-    Connecting,
-    Connected,
-    Data(Vec<Task>),
-    Error,
-}
-
 #[derive(Debug, Clone)]
 enum Message {
     Connected(Result<OxydoroClient<Channel>, OxydoroError>),
     Received(Result<Vec<Task>, OxydoroError>),
+    InputChanged(String),
 }
 
 impl Application for OxydoroUI {
     type Executor = executor::Default;
     type Message = Message;
-    type Flags = ();
+    type Flags = Theme;
 
-    fn new(_flags: ()) -> (OxydoroUI, Command<Message>) {
+    fn new(flags: Theme) -> (OxydoroUI, Command<Message>) {
         (
-            OxydoroUI::new(),
+            OxydoroUI::new(flags),
             Command::perform(
                 create_rpc_connection(String::from("http://127.0.0.1:5001")),
                 Message::Connected,
@@ -68,18 +80,25 @@ impl Application for OxydoroUI {
     fn title(&self) -> String {
         match &self.state {
             OxydoroState::Connecting => String::from("Oxydoro - Connecting..."),
-            OxydoroState::Connected => String::from("Oxydoro"),
+            OxydoroState::Connected { rpc_connector: _ } => String::from("Oxydoro"),
             OxydoroState::Error => String::from("Oxydoro - Error connecting"),
-            OxydoroState::Data(_) => String::from("Oxydoro"),
+            OxydoroState::Data {
+                rpc_connector: _,
+                tasks: _,
+                scroll_state: _,
+                text_input_state: _,
+                new_task_name: _,
+            } => String::from("Oxydoro"),
         }
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Connected(Ok(mut rpc_client)) => {
-                self.state = OxydoroState::Connected;
+                self.state = OxydoroState::Connected {
+                    rpc_connector: rpc_client.clone(),
+                };
                 let request = tonic::Request::new(GetAllTasksRequest {});
-                self.rpc_connector = Some(rpc_client.clone());
                 let future = async move { rpc_client.get_all_tasks(request).await };
                 Command::perform(future, |response| {
                     Message::Received(
@@ -94,50 +113,121 @@ impl Application for OxydoroUI {
                 Command::none()
             }
             Message::Received(Ok(task_list)) => {
-                self.state = OxydoroState::Data(task_list);
+                if let OxydoroState::Connected { rpc_connector } = &self.state {
+                    self.state = OxydoroState::Data {
+                        rpc_connector: rpc_connector.clone(),
+                        tasks: task_list,
+                        scroll_state: scrollable::State::new(),
+                        text_input_state: text_input::State::focused(),
+                        new_task_name: String::new(),
+                    };
+                }
                 Command::none()
             }
             Message::Received(Err(_)) => {
                 self.state = OxydoroState::Error;
                 Command::none()
             }
+            Message::InputChanged(new_input_value) => {
+                if let OxydoroState::Data {
+                    tasks,
+                    rpc_connector,
+                    scroll_state,
+                    text_input_state,
+                    new_task_name,
+                } = &mut self.state {
+                    *new_task_name = new_input_value;
+                }
+                Command::none()
+            }
         }
     }
 
     fn view(&mut self) -> Element<Message> {
-        match &self.state {
-            OxydoroState::Connecting => Container::new(Text::new("Loading tasks").size(40))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x()
-                .center_y()
-                .into(),
-            OxydoroState::Connected => Container::new(Text::new("Connected").size(40))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x()
-                .center_y()
-                .into(),
-            OxydoroState::Error => Container::new(
+        match &mut self.state {
+            OxydoroState::Connecting => {
+                centered_element(Text::new("Loading tasks").size(40).into(), self.theme)
+            }
+            OxydoroState::Connected { rpc_connector: _ } => {
+                centered_element(Text::new("Connected").size(40).into(), self.theme)
+            }
+            OxydoroState::Error => centered_element(
                 Text::new("Error")
                     .size(40)
-                    .color(Color::from_rgb(1., 0., 0.)),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x()
-            .center_y()
-            .into(),
-            OxydoroState::Data(task_list) => Container::new(Text::new("Got data").size(40))
+                    .color(Color::from_rgb(1., 0., 0.))
+                    .into(),
+                self.theme,
+            ),
+            OxydoroState::Data {
+                tasks,
+                rpc_connector: _,
+                scroll_state,
+                text_input_state,
+                new_task_name,
+            } => {
+                let input = TextInput::new(
+                    text_input_state,
+                    "Enter search here...",
+                    new_task_name,
+                    Message::InputChanged,
+                )
                 .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x()
-                .center_y()
-                .into(),
+                .style(self.theme)
+                .size(30)
+                .padding(10);
+
+                let entries = tasks.iter().fold(
+                    Column::new().padding(20),
+                    |column: Column<Message>, task| column.push(task.view()),
+                );
+
+                let scrollable_entries = Scrollable::new(scroll_state)
+                    .push(input)
+                    .push(entries)
+                    .style(self.theme);
+
+                let content = Column::new().push(scrollable_entries).spacing(10).padding(5);
+
+                Container::new(content)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x()
+                    .align_y(iced::Align::Start)
+                    .style(self.theme)
+                    .into()
+            }
         }
     }
 }
 
+fn centered_element(content: Element<Message>, theme: Theme) -> Element<Message> {
+    Container::new(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x()
+        .center_y()
+        .style(theme)
+        .into()
+}
+
+
+trait ViewModel {
+    fn view(&self) -> Element<Message>;
+}
+
+impl ViewModel for Task {
+    fn view(&self) -> Element<Message> {
+        Row::new()
+            .width(Length::Fill)
+            .align_items(Align::Center)
+            .padding(10)
+            .push(Text::new(self.title.clone()).size(20))
+            .into()
+    }
+}
+
 pub fn main() {
-    OxydoroUI::run(Settings::default())
+    let light = false;
+    let theme = if light { Theme::Light } else { Theme::Dark };
+    OxydoroUI::run(Settings::with_flags(theme))
 }
