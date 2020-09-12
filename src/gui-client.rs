@@ -1,13 +1,14 @@
 mod style;
 
 use iced::{
-    executor, Application, Color, Column, Command, Container, Element, Length, Settings, Text, scrollable, Scrollable, Row, Align, TextInput, text_input
+    executor, scrollable, text_input, Align, Application, Color, Column, Command, Container,
+    Element, Length, Row, Scrollable, Settings, Text, TextInput,
 };
 
 use style::Theme;
 
 use oxydoro::oxydoro_client::OxydoroClient;
-use oxydoro::{GetAllTasksRequest, Task};
+use oxydoro::{CreateTaskRequest, GetAllTasksRequest, Task};
 use tonic::transport::Channel;
 
 pub mod oxydoro {
@@ -19,18 +20,32 @@ struct OxydoroUI {
     theme: Theme,
 }
 
+struct LoadedViewState {
+    rpc_connector: OxydoroClient<Channel>,
+    tasks: Vec<Task>,
+    scroll_state: scrollable::State,
+    text_input_state: text_input::State,
+    new_task_name: String,
+}
+
+impl LoadedViewState {
+    fn new(rpc_connector: OxydoroClient<Channel>, task_list: Vec<Task>) -> LoadedViewState {
+        LoadedViewState {
+            rpc_connector,
+            tasks: task_list,
+            scroll_state: scrollable::State::new(),
+            text_input_state: text_input::State::focused(),
+            new_task_name: String::new(),
+        }
+    }
+}
+
 enum OxydoroState {
     Connecting,
     Connected {
         rpc_connector: OxydoroClient<Channel>,
     },
-    Data {
-        rpc_connector: OxydoroClient<Channel>,
-        tasks: Vec<Task>,
-        scroll_state: scrollable::State,
-        text_input_state: text_input::State,
-        new_task_name: String,
-    },
+    LoadedView(LoadedViewState),
     Error,
 }
 
@@ -60,6 +75,8 @@ enum Message {
     Connected(Result<OxydoroClient<Channel>, OxydoroError>),
     Received(Result<Vec<Task>, OxydoroError>),
     InputChanged(String),
+    SubmitNewTask,
+    TaskCreated,
 }
 
 impl Application for OxydoroUI {
@@ -82,13 +99,7 @@ impl Application for OxydoroUI {
             OxydoroState::Connecting => String::from("Oxydoro - Connecting..."),
             OxydoroState::Connected { rpc_connector: _ } => String::from("Oxydoro"),
             OxydoroState::Error => String::from("Oxydoro - Error connecting"),
-            OxydoroState::Data {
-                rpc_connector: _,
-                tasks: _,
-                scroll_state: _,
-                text_input_state: _,
-                new_task_name: _,
-            } => String::from("Oxydoro"),
+            OxydoroState::LoadedView(_) => String::from("Oxydoro"),
         }
     }
 
@@ -114,13 +125,10 @@ impl Application for OxydoroUI {
             }
             Message::Received(Ok(task_list)) => {
                 if let OxydoroState::Connected { rpc_connector } = &self.state {
-                    self.state = OxydoroState::Data {
-                        rpc_connector: rpc_connector.clone(),
-                        tasks: task_list,
-                        scroll_state: scrollable::State::new(),
-                        text_input_state: text_input::State::focused(),
-                        new_task_name: String::new(),
-                    };
+                    self.state = OxydoroState::LoadedView(LoadedViewState::new(
+                        rpc_connector.clone(),
+                        task_list,
+                    ));
                 }
                 Command::none()
             }
@@ -129,17 +137,25 @@ impl Application for OxydoroUI {
                 Command::none()
             }
             Message::InputChanged(new_input_value) => {
-                if let OxydoroState::Data {
-                    tasks,
-                    rpc_connector,
-                    scroll_state,
-                    text_input_state,
-                    new_task_name,
-                } = &mut self.state {
-                    *new_task_name = new_input_value;
+                if let OxydoroState::LoadedView(loaded_view_state) = &mut self.state {
+                    loaded_view_state.new_task_name = new_input_value;
                 }
                 Command::none()
             }
+            Message::SubmitNewTask => {
+                if let OxydoroState::LoadedView(loaded_view_state) = &mut self.state {
+                    let request = tonic::Request::new(CreateTaskRequest {
+                        title: loaded_view_state.new_task_name.clone(),
+                    });
+                    loaded_view_state.new_task_name = String::new();
+                    let mut rpc_connector = loaded_view_state.rpc_connector.clone();
+                    let future = async move { rpc_connector.create_task(request).await };
+                    Command::perform(future, |_| Message::TaskCreated)
+                } else {
+                    Command::none()
+                }
+            }
+            Message::TaskCreated => Command::none(),
         }
     }
 
@@ -158,35 +174,33 @@ impl Application for OxydoroUI {
                     .into(),
                 self.theme,
             ),
-            OxydoroState::Data {
-                tasks,
-                rpc_connector: _,
-                scroll_state,
-                text_input_state,
-                new_task_name,
-            } => {
+            OxydoroState::LoadedView(loaded_view_state) => {
                 let input = TextInput::new(
-                    text_input_state,
+                    &mut loaded_view_state.text_input_state,
                     "Enter search here...",
-                    new_task_name,
+                    &loaded_view_state.new_task_name,
                     Message::InputChanged,
                 )
                 .width(Length::Fill)
                 .style(self.theme)
                 .size(30)
-                .padding(10);
+                .padding(10)
+                .on_submit(Message::SubmitNewTask);
 
-                let entries = tasks.iter().fold(
+                let entries = loaded_view_state.tasks.iter().fold(
                     Column::new().padding(20),
                     |column: Column<Message>, task| column.push(task.view()),
                 );
 
-                let scrollable_entries = Scrollable::new(scroll_state)
+                let scrollable_entries = Scrollable::new(&mut loaded_view_state.scroll_state)
                     .push(input)
                     .push(entries)
                     .style(self.theme);
 
-                let content = Column::new().push(scrollable_entries).spacing(10).padding(5);
+                let content = Column::new()
+                    .push(scrollable_entries)
+                    .spacing(10)
+                    .padding(5);
 
                 Container::new(content)
                     .width(Length::Fill)
@@ -209,7 +223,6 @@ fn centered_element(content: Element<Message>, theme: Theme) -> Element<Message>
         .style(theme)
         .into()
 }
-
 
 trait ViewModel {
     fn view(&self) -> Element<Message>;
