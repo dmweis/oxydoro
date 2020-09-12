@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package oxydoro;
+
+message TaskId {
+    string uuid = 1;
+}
+
+message Task {
+    string title = 1;
+    TaskId id = 2;
+    bool done = 3;
+}
+
+message TaskList {
+    repeated Task tasks = 1;
+}
+
+service Oxydoro {
+    rpc CreateTask (CreateTaskRequest) returns (CreateTaskReply) {}
+    rpc GetAllTasks (GetAllTasksRequest) returns (GetAllTasksReply) {}
+}
+
+message CreateTaskRequest {
+    string title = 1;
+}
+
+message CreateTaskReply {
+    Task task = 1;
+}
+
+message GetAllTasksRequest {}
+
+message GetAllTasksReply {
+    repeated Task tasks = 1;
+}
