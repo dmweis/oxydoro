@@ -19,6 +19,7 @@ message TaskList {
 service Oxydoro {
     rpc CreateTask (CreateTaskRequest) returns (CreateTaskReply) {}
     rpc GetAllTasks (GetAllTasksRequest) returns (GetAllTasksReply) {}
+    rpc SubscribeToTaskUpdates (SubscribeToTaskUpdatesRequest) returns (stream SubscribeToTaskUpdatesReply) {}
 }
 
 message CreateTaskRequest {
@@ -32,5 +33,11 @@ message CreateTaskReply {
 message GetAllTasksRequest {}
 
 message GetAllTasksReply {
+    repeated Task tasks = 1;
+}
+
+message SubscribeToTaskUpdatesRequest {}
+
+message SubscribeToTaskUpdatesReply {
     repeated Task tasks = 1;
 }

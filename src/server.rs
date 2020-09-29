@@ -1,10 +1,12 @@
 use std::sync::{Arc, RwLock};
+use tokio::sync::{mpsc, watch};
 use tonic::{transport::Server, Request, Response, Status};
 use uuid::Uuid;
 
 use oxydoro::oxydoro_server::{Oxydoro, OxydoroServer};
 use oxydoro::{
-    CreateTaskReply, CreateTaskRequest, GetAllTasksReply, GetAllTasksRequest, Task, TaskId,
+    CreateTaskReply, CreateTaskRequest, GetAllTasksReply, GetAllTasksRequest,
+    SubscribeToTaskUpdatesReply, SubscribeToTaskUpdatesRequest, Task, TaskId,
 };
 
 pub mod oxydoro {
@@ -27,9 +29,21 @@ impl TaskIdWrapper for TaskId {
     }
 }
 
-#[derive(Default)]
 struct OxydoroStore {
     tasks: Arc<RwLock<Vec<Task>>>,
+    awaiter: watch::Receiver<()>,
+    waker: watch::Sender<()>,
+}
+
+impl Default for OxydoroStore {
+    fn default() -> Self {
+        let (tx, rx) = watch::channel(());
+        OxydoroStore {
+            tasks: Arc::new(RwLock::new(vec![])),
+            awaiter: rx,
+            waker: tx,
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -49,6 +63,7 @@ impl Oxydoro for OxydoroStore {
             .write()
             .map_err(|_| Status::internal("Failed to unlock store"))?;
         tasks.push(new_task.clone());
+        self.waker.broadcast(()).unwrap();
         Ok(Response::new(CreateTaskReply {
             task: Some(new_task),
         }))
@@ -65,6 +80,31 @@ impl Oxydoro for OxydoroStore {
             .clone();
         let reply = GetAllTasksReply { tasks };
         Ok(Response::new(reply))
+    }
+
+    type SubscribeToTaskUpdatesStream = mpsc::Receiver<Result<SubscribeToTaskUpdatesReply, Status>>;
+
+    async fn subscribe_to_task_updates(
+        &self,
+        req: Request<SubscribeToTaskUpdatesRequest>,
+    ) -> Result<Response<Self::SubscribeToTaskUpdatesStream>, Status> {
+        let (mut tx, rx) = mpsc::channel(16);
+
+        let tasks = Arc::clone(&self.tasks);
+        let mut awaiter = self.awaiter.clone();
+        tokio::spawn(async move {
+            loop {
+                awaiter.recv().await;
+                let tasks = tasks.read().unwrap().clone();
+                let res = tx.send(Ok(SubscribeToTaskUpdatesReply { tasks })).await;
+                if res.is_err() {
+                    println!("Client disconnected {:?}", req.remote_addr());
+                    return;
+                }
+            }
+        });
+
+        Ok(Response::new(rx))
     }
 }
 

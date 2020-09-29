@@ -1,5 +1,5 @@
 use oxydoro::oxydoro_client::OxydoroClient;
-use oxydoro::{CreateTaskRequest, GetAllTasksRequest};
+use oxydoro::{CreateTaskRequest, GetAllTasksRequest, SubscribeToTaskUpdatesRequest};
 
 use clap::Clap;
 
@@ -18,6 +18,7 @@ struct Args {
 enum SubCommand {
     Add(AddParam),
     Get,
+    AsyncGet,
 }
 
 #[derive(Clap)]
@@ -47,6 +48,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let response = client.get_all_tasks(request).await?;
             for task in response.into_inner().tasks {
                 println!("{}", task.title);
+            }
+        }
+        SubCommand::AsyncGet => {
+            let mut tasks_stream = client
+                .subscribe_to_task_updates(tonic::Request::new(SubscribeToTaskUpdatesRequest {}))
+                .await?
+                .into_inner();
+            println!("Connected to stream");
+            while let Some(task_update) = tasks_stream.message().await? {
+                println!("Tasks");
+                for task in task_update.tasks {
+                    println!("   {}", task.title);
+                }
             }
         }
     }

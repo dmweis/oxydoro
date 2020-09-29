@@ -8,7 +8,10 @@ use iced::{
 use style::Theme;
 
 use oxydoro::oxydoro_client::OxydoroClient;
-use oxydoro::{CreateTaskRequest, GetAllTasksRequest, Task};
+use oxydoro::{
+    CreateTaskRequest, GetAllTasksRequest, SubscribeToTaskUpdatesReply,
+    SubscribeToTaskUpdatesRequest, Task,
+};
 use tonic::transport::Channel;
 
 pub mod oxydoro {
