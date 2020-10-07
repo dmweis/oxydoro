@@ -53,8 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SubCommand::AsyncGet => {
             let mut tasks_stream = client
                 .subscribe_to_task_updates(tonic::Request::new(SubscribeToTaskUpdatesRequest {}))
-                .await?
-                .into_inner();
+                .await?;
+            let mut tasks_stream = tasks_stream.into_inner();
             println!("Connected to stream");
             while let Some(task_update) = tasks_stream.message().await? {
                 println!("Tasks");

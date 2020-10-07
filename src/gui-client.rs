@@ -2,7 +2,7 @@ mod style;
 
 use iced::{
     executor, scrollable, text_input, Align, Application, Color, Column, Command, Container,
-    Element, Length, Row, Scrollable, Settings, Text, TextInput,
+    Element, Length, Row, Scrollable, Settings, Subscription, Text, TextInput,
 };
 
 use style::Theme;
@@ -13,6 +13,7 @@ use oxydoro::{
     SubscribeToTaskUpdatesRequest, Task,
 };
 use tonic::transport::Channel;
+use tonic::Streaming;
 
 pub mod oxydoro {
     tonic::include_proto!("oxydoro");
@@ -80,6 +81,7 @@ enum Message {
     InputChanged(String),
     SubmitNewTask,
     TaskCreated,
+    StreamUpdate(SubOutput),
 }
 
 impl Application for OxydoroUI {
@@ -135,6 +137,7 @@ impl Application for OxydoroUI {
                 }
                 Command::none()
             }
+
             Message::Received(Err(_)) => {
                 self.state = OxydoroState::Error;
                 Command::none()
@@ -159,6 +162,25 @@ impl Application for OxydoroUI {
                 }
             }
             Message::TaskCreated => Command::none(),
+            Message::StreamUpdate(update) => {
+                if let SubOutput::Message(message) = update {
+                    if let OxydoroState::LoadedView(ref mut view) = self.state {
+                        view.tasks = message.tasks;
+                    }
+                }
+                Command::none()
+            }
+        }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        match self.state {
+            OxydoroState::Connected { ref rpc_connector } => Subscription::none(),
+            OxydoroState::LoadedView(ref state) => {
+                iced::Subscription::from_recipe(StreamWrapper::new(state.rpc_connector.clone()))
+                    .map(Message::StreamUpdate)
+            }
+            _ => Subscription::none(),
         }
     }
 
@@ -246,4 +268,64 @@ pub fn main() {
     let light = false;
     let theme = if light { Theme::Light } else { Theme::Dark };
     OxydoroUI::run(Settings::with_flags(theme))
+}
+
+struct StreamWrapper {
+    client: OxydoroClient<Channel>,
+    stream: Option<Streaming<SubscribeToTaskUpdatesReply>>,
+}
+
+impl StreamWrapper {
+    fn new(client: OxydoroClient<Channel>) -> StreamWrapper {
+        StreamWrapper {
+            client,
+            stream: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SubOutput {
+    Loading,
+    Message(SubscribeToTaskUpdatesReply),
+    Error,
+}
+
+impl<H, I> iced_native::subscription::Recipe<H, I> for StreamWrapper
+where
+    H: std::hash::Hasher,
+{
+    type Output = SubOutput;
+
+    fn hash(&self, state: &mut H) {
+        use std::hash::Hash;
+
+        std::any::TypeId::of::<Self>().hash(state);
+    }
+
+    fn stream(
+        self: Box<Self>,
+        _input: futures::stream::BoxStream<'static, I>,
+    ) -> futures::stream::BoxStream<'static, Self::Output> {
+        Box::pin(futures::stream::unfold(
+            self,
+            |mut stream_wrapper| async move {
+                if let Some(ref mut stream) = stream_wrapper.stream {
+                    let message = stream.message().await.unwrap().unwrap();
+                    Some((SubOutput::Message(message), stream_wrapper))
+                } else {
+                    let tasks_stream = stream_wrapper
+                        .client
+                        .subscribe_to_task_updates(tonic::Request::new(
+                            SubscribeToTaskUpdatesRequest {},
+                        ))
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    stream_wrapper.stream = Some(tasks_stream);
+                    Some((SubOutput::Loading, stream_wrapper))
+                }
+            },
+        ))
+    }
 }
